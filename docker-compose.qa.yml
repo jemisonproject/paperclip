@@ -1,0 +1,137 @@
+# QA testing environment — runs on the UGREEN NAS alongside Paperclip.
+#
+# Spins up the web app + API + database from the paperclip-features branch
+# so the QA agent can browse and visually verify changes before merging
+# to main.
+#
+# Architecture:
+#
+#   ┌─────────────────────────────────────────────────────┐
+#   │  NAS host                                           │
+#   │                                                     │
+#   │  OpenClaw + Playwright (on host, not in Docker)     │
+#   │       │ browses http://localhost:7070                │
+#   │       ▼                                             │
+#   │  ┌─────────────────────────────────────────┐        │
+#   │  │ Docker: koiomi-qa stack                 │        │
+#   │  │                                         │        │
+#   │  │  qa-web (:4000, exposed as :7070)       │        │
+#   │  │    └─ Express proxies /api/graphql ──►  │        │
+#   │  │  qa-api (:3000)                         │        │
+#   │  │    └─ connects to ──►                   │        │
+#   │  │  qa-db  (PostgreSQL)                    │        │
+#   │  └─────────────────────────────────────────┘        │
+#   └─────────────────────────────────────────────────────┘
+#
+# Usage:
+#   # First time / after paperclip-features gets new commits:
+#   ./scripts/qa-rebuild.sh
+#
+#   # Or manually:
+#   docker compose -f docker-compose.qa.yml up --build -d
+#
+#   # Logs:
+#   docker compose -f docker-compose.qa.yml logs -f
+#
+#   # Stop:
+#   docker compose -f docker-compose.qa.yml down
+#
+# Repo paths default to siblings of this directory (../api, ../web).
+# Override with QA_API_PATH and QA_WEB_PATH env vars if your layout differs.
+
+name: koiomi-qa
+
+services:
+  # ------------------------------------------------------------------
+  # PostgreSQL — QA-isolated database (separate from any dev/prod DB)
+  # ------------------------------------------------------------------
+  qa-db:
+    image: postgres:18-alpine
+    container_name: qa-db
+    environment:
+      POSTGRES_DB: koiomi_qa
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - qa-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d koiomi_qa"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # API — built from paperclip-features branch (dev target, ts-node)
+  # ------------------------------------------------------------------
+  qa-api:
+    build:
+      context: ${QA_API_PATH:-../api}
+      dockerfile: Dockerfile
+      target: dev
+    container_name: qa-api
+    environment:
+      # Database (local QA container, NOT Neon)
+      - POSTGRES_HOST=qa-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=koiomi_qa
+      - DB_SSL=false
+      - DB_SYNC=true
+      # App
+      - NODE_ENV=development
+      - PORT=3000
+      - ENV=dev
+      - FRONTEND_URL=http://localhost:7070
+      - CORS_ORIGIN=http://localhost:7070
+      # Auth
+      - JWT_SECRET=supersecret
+      - JWT_EXPIRES=30m
+      - BCRYPT_SALT_ROUNDS=10
+      # Initial setup
+      - REMOVE_OLD_DOCKER_IMAGE=true
+      - CREATE_POSTGRES_DB=true
+      - RUN_MIGRATIONS=true
+      - SEED_DATA=true
+    volumes:
+      - ${QA_API_PATH:-../api}:/usr/src/app
+      - /usr/src/app/node_modules
+    depends_on:
+      qa-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Web app — built from paperclip-features branch (Vite dev server)
+  #
+  # Express (inside the web container) proxies /api/graphql to qa-api.
+  # Playwright on the host browses http://localhost:7070.
+  # ------------------------------------------------------------------
+  qa-web:
+    build:
+      context: ${QA_WEB_PATH:-../web}
+      dockerfile: apps/main/Dockerfile.dev
+      args:
+        # Client-side: browser uses relative URL, proxied by Express
+        VITE_GRAPHQL_ENDPOINT: /api/graphql
+    container_name: qa-web
+    environment:
+      # Express server-side proxy target (Docker DNS resolves qa-api)
+      - GRAPHQL_ENDPOINT=http://qa-api:3000/graphql
+      # Client-side: relative URL so browser requests go through Express proxy
+      - VITE_GRAPHQL_ENDPOINT=/api/graphql
+      - NODE_ENV=development
+      - PORT=4000
+      # Tokens
+      - MAPBOX_PUBLIC_TOKEN=
+      - VITE_STRIPE_PUBLIC_KEY=
+      - VITE_MERCADO_PAGO_PUBLIC_KEY=
+    ports:
+      - "7070:4000"
+    depends_on:
+      - qa-api
+    restart: unless-stopped
+
+volumes:
+  qa-pgdata:

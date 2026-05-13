@@ -1,44 +1,41 @@
-# docker-compose.yml
+# Paperclip on a UGREEN NAS, fronted by Tailscale.
 #
-# Paperclip + Tailscale sidecar for self-hosted deployment on a UGREEN NAS
-# (or any Linux host with Docker).
-#
-# Architecture:
+# Architecture (one Docker stack, two containers sharing a network namespace):
 #
 #   ┌───────────────────────── one shared netns ─────────────────────────┐
 #   │                                                                    │
-#   │   tailscale (joins tailnet, serves :443 via Tailscale Serve)       │
-#   │   paperclip (listens on :3000, only reachable inside the netns)    │
+#   │   tailscale   (joins the koiomi tailnet, terminates HTTPS at :443) │
+#   │   paperclip   (listens on :3100, only reachable inside the netns)  │
 #   │                                                                    │
 #   └────────────────────────────────────────────────────────────────────┘
-#                                  │
-#                                  │  https over WireGuard
+#                                  │  WireGuard
 #                                  ▼
 #               https://paperclip.<tailnet>.ts.net
-#                  (reachable only by team members on the tailnet)
+#                  (reachable only to Tailscale members)
 #
-# Bring up:  docker compose up -d
-# Logs:      docker compose logs -f
-# Stop:      docker compose down       (data persists in ./data)
+# We use the official prebuilt image — no local build. Embedded Postgres
+# and all Paperclip state live under /paperclip (bind-mounted to ./data/paperclip).
 #
-# See docs/NAS_DEPLOYMENT.md for the full setup, and
-# docs/TAILSCALE_TEAM_SETUP.md for what each teammate does on their laptop.
+# Bring up:    docker compose up -d
+# Logs:        docker compose logs -f
+# Stop:        docker compose down       (data persists in ./data/)
+# Update PC:   docker compose pull paperclip && docker compose up -d
+#
+# See docs/NAS_DEPLOYMENT.md for the full setup.
 
 services:
   # ----------------------------------------------------------------
-  # Tailscale sidecar — joins the tailnet, owns the network namespace
-  # that paperclip will share. Tailscale Serve terminates HTTPS at
-  # the tailnet hostname and forwards to paperclip on localhost:3000.
+  # Tailscale sidecar — joins the tailnet under the tag:paperclip
+  # and owns the network namespace that paperclip will share.
   # ----------------------------------------------------------------
   tailscale:
     image: tailscale/tailscale:latest
     container_name: paperclip-tailscale
-    hostname: paperclip                 # becomes paperclip.<tailnet>.ts.net
+    hostname: paperclip                  # becomes paperclip.<tailnet>.ts.net
     environment:
-      - TS_AUTHKEY=${TS_AUTHKEY}        # tskey-auth-... from your tailnet admin
+      - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_STATE_DIR=/var/lib/tailscale
-      - TS_USERSPACE=false              # use kernel WireGuard for performance
-      - TS_EXTRA_ARGS=--advertise-tags=tag:paperclip
+      - TS_USERSPACE=false
     volumes:
       - ./data/tailscale-state:/var/lib/tailscale
       - /dev/net/tun:/dev/net/tun
@@ -50,28 +47,24 @@ services:
       test: ["CMD", "tailscale", "status"]
       interval: 30s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   # ----------------------------------------------------------------
-  # Paperclip — single Node 22 container with embedded PostgreSQL,
-  # all state under /data. Shares tailscale's network namespace so
-  # it's reachable through the tailnet hostname only.
+  # Paperclip — official image from GHCR. Listens on :3100, all state
+  # under /paperclip (volume-mounted). Shares tailscale's netns so it
+  # is only reachable through the tailnet hostname.
   # ----------------------------------------------------------------
   paperclip:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/paperclipai/paperclip:latest
     container_name: paperclip
-    network_mode: "service:tailscale"   # share netns with tailscale
+    network_mode: "service:tailscale"
     environment:
-      - PORT=3000
-      - NODE_ENV=production
       - PAPERCLIP_PUBLIC_URL=${PAPERCLIP_PUBLIC_URL}
-      - PAPERCLIP_SECRET=${PAPERCLIP_SECRET}
-      - PAPERCLIP_ADMIN_EMAIL=${PAPERCLIP_ADMIN_EMAIL}
-      - PAPERCLIP_ALLOWED_EMAIL_DOMAINS=${PAPERCLIP_ALLOWED_EMAIL_DOMAINS:-}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
+      - PAPERCLIP_DEPLOYMENT_MODE=authenticated
+      - PAPERCLIP_DEPLOYMENT_EXPOSURE=private
     volumes:
-      - ./data/paperclip:/data
+      - ./data/paperclip:/paperclip
     depends_on:
       tailscale:
         condition: service_healthy
