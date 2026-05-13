@@ -42,7 +42,11 @@ You should land on the login page (or, if you have a pending invite from Papercl
 
 ## 5. Accept your Paperclip invite
 
-Juan sends you a separate invite from inside Paperclip's UI (this is a different invite from the Tailscale one). Click the link, set your password, you're in.
+Juan sends you a separate invite from inside Paperclip's UI (this is a different invite from the Tailscale one).
+
+> **Heads-up.** The invite acceptance page is currently broken upstream — clicking the link loads a blank black screen. This is a known bug, not a Tailscale or local-config problem. Workaround steps are in `docs/UPSTREAM_BUGS.md` (issue #1). Roughly: sign up at the bare URL with the invited email, then run a one-line `fetch()` in your browser dev tools console to create the join request. Juan then approves it from the admin side. Takes about 60 seconds end-to-end once you know the steps.
+
+Once Juan approves your join request, refresh the Paperclip URL — you'll land on the Koiomi dashboard.
 
 ## 6. Generate your personal API key
 
