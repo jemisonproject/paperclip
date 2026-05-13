@@ -1,0 +1,32 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Node / build artifacts (in case Dockerfile is ever run locally)
+node_modules/
+dist/
+build/
+.next/
+.cache/
+
+# Editor & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local Paperclip data (only if anyone runs locally for debugging)
+data/
+pgdata/
+*.sqlite
+*.sqlite3
+
+# Local CLAUDE overrides (each teammate can keep personal prefs)
+CLAUDE.local.md
+.claude/local/

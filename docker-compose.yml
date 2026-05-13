@@ -1,0 +1,78 @@
+# docker-compose.yml
+#
+# Paperclip + Tailscale sidecar for self-hosted deployment on a UGREEN NAS
+# (or any Linux host with Docker).
+#
+# Architecture:
+#
+#   ┌───────────────────────── one shared netns ─────────────────────────┐
+#   │                                                                    │
+#   │   tailscale (joins tailnet, serves :443 via Tailscale Serve)       │
+#   │   paperclip (listens on :3000, only reachable inside the netns)    │
+#   │                                                                    │
+#   └────────────────────────────────────────────────────────────────────┘
+#                                  │
+#                                  │  https over WireGuard
+#                                  ▼
+#               https://paperclip.<tailnet>.ts.net
+#                  (reachable only by team members on the tailnet)
+#
+# Bring up:  docker compose up -d
+# Logs:      docker compose logs -f
+# Stop:      docker compose down       (data persists in ./data)
+#
+# See docs/NAS_DEPLOYMENT.md for the full setup, and
+# docs/TAILSCALE_TEAM_SETUP.md for what each teammate does on their laptop.
+
+services:
+  # ----------------------------------------------------------------
+  # Tailscale sidecar — joins the tailnet, owns the network namespace
+  # that paperclip will share. Tailscale Serve terminates HTTPS at
+  # the tailnet hostname and forwards to paperclip on localhost:3000.
+  # ----------------------------------------------------------------
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: paperclip-tailscale
+    hostname: paperclip                 # becomes paperclip.<tailnet>.ts.net
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}        # tskey-auth-... from your tailnet admin
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false              # use kernel WireGuard for performance
+      - TS_EXTRA_ARGS=--advertise-tags=tag:paperclip
+    volumes:
+      - ./data/tailscale-state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "tailscale", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------
+  # Paperclip — single Node 22 container with embedded PostgreSQL,
+  # all state under /data. Shares tailscale's network namespace so
+  # it's reachable through the tailnet hostname only.
+  # ----------------------------------------------------------------
+  paperclip:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: paperclip
+    network_mode: "service:tailscale"   # share netns with tailscale
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - PAPERCLIP_PUBLIC_URL=${PAPERCLIP_PUBLIC_URL}
+      - PAPERCLIP_SECRET=${PAPERCLIP_SECRET}
+      - PAPERCLIP_ADMIN_EMAIL=${PAPERCLIP_ADMIN_EMAIL}
+      - PAPERCLIP_ALLOWED_EMAIL_DOMAINS=${PAPERCLIP_ALLOWED_EMAIL_DOMAINS:-}
+    volumes:
+      - ./data/paperclip:/data
+    depends_on:
+      tailscale:
+        condition: service_healthy
+    restart: unless-stopped
