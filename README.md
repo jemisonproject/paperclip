@@ -38,6 +38,8 @@ Reachable only to members of the Koiomi tailnet. Not on the public internet.
 - _teammate 2_
 - _teammate 3_
 
+Maintained by the jemisonproject organization on GitHub.
+
 ## Upstream
 
 - Paperclip source: <https://github.com/paperclipai/paperclip>
