@@ -4,52 +4,19 @@
 # so the QA agent can browse and visually verify changes before merging
 # to main.
 #
-# Architecture:
-#
-#   ┌─────────────────────────────────────────────────────┐
-#   │  NAS host                                           │
-#   │                                                     │
-#   │  OpenClaw + Playwright (on host, not in Docker)     │
-#   │       │ browses http://localhost:7070                │
-#   │       ▼                                             │
-#   │  ┌─────────────────────────────────────────┐        │
-#   │  │ Docker: koiomi-qa stack                 │        │
-#   │  │                                         │        │
-#   │  │  qa-web (:4000, exposed as :7070)       │        │
-#   │  │    └─ Express proxies /api/graphql ──►  │        │
-#   │  │  qa-api (:3000)                         │        │
-#   │  │    └─ connects to ──►                   │        │
-#   │  │  qa-db  (PostgreSQL)                    │        │
-#   │  └─────────────────────────────────────────┘        │
-#   └─────────────────────────────────────────────────────┘
-#
 # Prerequisites:
 #   - api/ and web/ repos cloned as siblings of this directory
 #   - Each repo must have its own .env file with secrets (gitignored)
-#   - See docs/QA_NAS_SETUP_DETAILED.md for setup instructions
 #
 # Usage:
-#   # First time / after paperclip-features gets new commits:
 #   ./scripts/qa-rebuild.sh
-#
-#   # Or manually:
 #   docker compose -f docker-compose.qa.yml up --build -d
-#
-#   # Logs:
 #   docker compose -f docker-compose.qa.yml logs -f
-#
-#   # Stop:
 #   docker compose -f docker-compose.qa.yml down
-#
-# Repo paths default to siblings of this directory (../api, ../web).
-# Override with QA_API_PATH and QA_WEB_PATH env vars if your layout differs.
 
 name: koiomi-qa
 
 services:
-  # ------------------------------------------------------------------
-  # PostgreSQL — QA-isolated database (separate from any dev/prod DB)
-  # ------------------------------------------------------------------
   qa-db:
     image: postgres:18-alpine
     container_name: qa-db
@@ -66,14 +33,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # ------------------------------------------------------------------
-  # API — built from paperclip-features branch (dev target, ts-node)
-  #
-  # Reads secrets from ../api/.env (gitignored in the api repo).
-  # Inline environment vars override the DB connection to use qa-db.
-  # Source code is volume-mounted because the dev Dockerfile stage
-  # only copies package.json (expects volumes for source).
-  # ------------------------------------------------------------------
   qa-api:
     build:
       context: ${QA_API_PATH:-../api}
@@ -83,7 +42,6 @@ services:
     env_file:
       - ${QA_API_PATH:-../api}/.env
     environment:
-      # Override DB to use local QA container (not whatever's in .env)
       - POSTGRES_HOST=qa-db
       - POSTGRES_PORT=5432
       - POSTGRES_USER=postgres
@@ -101,13 +59,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ------------------------------------------------------------------
-  # Web app — built from paperclip-features branch (Vite dev server)
-  #
-  # Reads tokens from ../web/.env (gitignored in the web repo).
-  # Express (inside the web container) proxies /api/graphql to qa-api.
-  # Playwright on the host browses http://localhost:7070.
-  # ------------------------------------------------------------------
   qa-web:
     build:
       context: ${QA_WEB_PATH:-../web}
@@ -118,7 +69,6 @@ services:
     env_file:
       - ${QA_WEB_PATH:-../web}/.env
     environment:
-      # Override GraphQL endpoint for Docker networking
       - GRAPHQL_ENDPOINT=http://qa-api:3000/graphql
       - VITE_GRAPHQL_ENDPOINT=/api/graphql
       - NODE_ENV=development
