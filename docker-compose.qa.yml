@@ -23,6 +23,11 @@
 #   │  └─────────────────────────────────────────┘        │
 #   └─────────────────────────────────────────────────────┘
 #
+# Prerequisites:
+#   - api/ and web/ repos cloned as siblings of this directory
+#   - Each repo must have its own .env file with secrets (gitignored)
+#   - See docs/QA_NAS_SETUP_DETAILED.md for setup instructions
+#
 # Usage:
 #   # First time / after paperclip-features gets new commits:
 #   ./scripts/qa-rebuild.sh
@@ -63,6 +68,11 @@ services:
 
   # ------------------------------------------------------------------
   # API — built from paperclip-features branch (dev target, ts-node)
+  #
+  # Reads secrets from ../api/.env (gitignored in the api repo).
+  # Inline environment vars override the DB connection to use qa-db.
+  # Source code is volume-mounted because the dev Dockerfile stage
+  # only copies package.json (expects volumes for source).
   # ------------------------------------------------------------------
   qa-api:
     build:
@@ -70,14 +80,22 @@ services:
       dockerfile: Dockerfile
       target: dev
     container_name: qa-api
+    env_file:
+      - ${QA_API_PATH:-../api}/.env
     environment:
+      # Override DB to use local QA container (not whatever's in .env)
       - POSTGRES_HOST=qa-db
       - POSTGRES_PORT=5432
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=koiomi_qa
-      - NODE_ENV=development
-      - PORT=3000
+      - DB_SSL=false
+      - DB_SYNC=true
+      - FRONTEND_URL=http://localhost:7070
+      - CORS_ORIGIN=http://localhost:7070
+    volumes:
+      - ${QA_API_PATH:-../api}:/usr/src/app
+      - /usr/src/app/node_modules
     depends_on:
       qa-db:
         condition: service_healthy
@@ -86,6 +104,7 @@ services:
   # ------------------------------------------------------------------
   # Web app — built from paperclip-features branch (Vite dev server)
   #
+  # Reads tokens from ../web/.env (gitignored in the web repo).
   # Express (inside the web container) proxies /api/graphql to qa-api.
   # Playwright on the host browses http://localhost:7070.
   # ------------------------------------------------------------------
@@ -94,13 +113,13 @@ services:
       context: ${QA_WEB_PATH:-../web}
       dockerfile: apps/main/Dockerfile.dev
       args:
-        # Client-side: browser uses relative URL, proxied by Express
         VITE_GRAPHQL_ENDPOINT: /api/graphql
     container_name: qa-web
+    env_file:
+      - ${QA_WEB_PATH:-../web}/.env
     environment:
-      # Express server-side proxy target (Docker DNS resolves qa-api)
+      # Override GraphQL endpoint for Docker networking
       - GRAPHQL_ENDPOINT=http://qa-api:3000/graphql
-      # Client-side: relative URL so browser requests go through Express proxy
       - VITE_GRAPHQL_ENDPOINT=/api/graphql
       - NODE_ENV=development
       - PORT=4000
