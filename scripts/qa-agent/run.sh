@@ -193,12 +193,14 @@ check_tickets() {
 
   green "   Found $count ticket(s) to review"
 
-  echo "$tickets" | jq -c '.[]' | while read -r ticket; do
-    local id title description identifier
-    id=$(echo "$ticket" | jq -r '.id')
-    title=$(echo "$ticket" | jq -r '.title')
-    description=$(echo "$ticket" | jq -r '.description // "No description"')
-    identifier=$(echo "$ticket" | jq -r '.identifier // "unknown"')
+  local ticket_ids
+  ticket_ids=$(echo "$tickets" | jq -r '.[].id')
+
+  for id in $ticket_ids; do
+    local title description identifier
+    title=$(echo "$tickets" | jq -r ".[] | select(.id == \"$id\") | .title")
+    description=$(echo "$tickets" | jq -r ".[] | select(.id == \"$id\") | .description // \"No description\"")
+    identifier=$(echo "$tickets" | jq -r ".[] | select(.id == \"$id\") | .identifier // \"unknown\"")
 
     run_qa_check "$id" "$title" "$description" "$identifier"
   done
