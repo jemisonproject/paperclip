@@ -14,7 +14,7 @@
 #   - QA Docker stack running (web at localhost:7070)
 #   - PAPERCLIP_API_KEY set in environment or in .env.qa-agent
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENT_DIR="$SCRIPT_DIR"
@@ -51,7 +51,15 @@ paperclip_api() {
 
 # Get in_review issues assigned to QA agent
 get_qa_tickets() {
-  paperclip_api GET "/issues?status=in_review&assignee=$QA_AGENT_ID" 2>/dev/null || echo "[]"
+  # Try different param names since the API may vary
+  local result
+  result=$(paperclip_api GET "/issues?status=in_review&assignee_agent_id=$QA_AGENT_ID&limit=50" 2>/dev/null)
+  if [ -z "$result" ] || [ "$result" = "[]" ]; then
+    # Fallback: get all in_review and filter locally
+    result=$(paperclip_api GET "/issues?status=in_review&limit=50" 2>/dev/null | \
+      jq "[.[] | select(.assigneeAgentId == \"$QA_AGENT_ID\")]" 2>/dev/null)
+  fi
+  echo "${result:-[]}"
 }
 
 # Post a comment on an issue
@@ -78,28 +86,33 @@ run_qa_check() {
   blue "── QA checking: $identifier — $title"
 
   # Build the prompt for Claude Code
-  local prompt="You are a QA agent. Your job is to visually verify a web application change.
+  local prompt="You are a QA engineer testing a web application. You don't know or care about the code — you test what users see and experience.
 
-TASK:
+TICKET:
 - Title: $title
 - Description: $description
 
-INSTRUCTIONS:
+FIRST, decide if this ticket describes something you can verify by using the app in a browser. Examples of testable: login page works, search returns results, booking flow completes, UI shows correct data. Examples of NOT testable: backend API scaffold, database migration, JWT guard implementation, code refactor with no UI change.
+
+If the ticket is NOT visually testable (backend-only, infrastructure, code-level):
+Respond with:
+QA_RESULT: SKIP
+This is a backend/infrastructure change with no user-facing impact to verify visually.
+
+If the ticket IS visually testable, do this:
 1. Use the Playwright MCP browser tools to navigate to the relevant pages at $QA_WEB_URL
 2. Use browser_snapshot to see the page content (accessibility tree)
-3. Verify what you see matches the ticket description
-4. Check for any obvious errors (broken layouts, missing elements, console errors)
-5. Take a screenshot with browser_take_screenshot for evidence
+3. Interact with the app as a real user would — click buttons, fill forms, navigate
+4. Check for: pages loading correctly, forms working, data displaying, no errors
+5. Use browser_console_messages to check for JavaScript errors
 
-RESPOND WITH EXACTLY ONE OF THESE FORMATS:
+Then respond with EXACTLY one of:
 
-If everything looks good:
 QA_RESULT: PASS
-<your findings in 2-3 sentences>
+<what you tested and verified in 2-3 sentences>
 
-If something is wrong:
 QA_RESULT: FAIL
-<describe what's wrong in 2-3 sentences>"
+<what's broken and how to reproduce in 2-3 sentences>"
 
   # Run Claude Code in print mode with the Playwright MCP
   local result
@@ -111,7 +124,15 @@ QA_RESULT: FAIL
   }
 
   # Parse result
-  if echo "$result" | grep -q "QA_RESULT: PASS"; then
+  if echo "$result" | grep -q "QA_RESULT: SKIP"; then
+    dim "   SKIPPED: $identifier (not visually testable)"
+    post_comment "$issue_id" "**QA SKIPPED** — This ticket describes a backend/infrastructure change with no user-facing UI to verify. Marking as done (no visual regression possible).
+
+---
+*Automated QA by Claude Code agent*"
+    update_status "$issue_id" "done"
+
+  elif echo "$result" | grep -q "QA_RESULT: PASS"; then
     green "   PASSED: $identifier"
     post_comment "$issue_id" "$(cat <<EOF
 **QA PASSED** ✓

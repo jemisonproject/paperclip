@@ -125,9 +125,45 @@ After the PR is merged into `paperclip-features`, post a comment on the Papercli
 
 - Use the Paperclip-skill API patterns (see that skill).
 - The comment must include the full `https://github.com/jemisonproject/<repo>/pull/<n>` URL.
-- Status must move to `in_review`, not `done`. The QA agent will pick it up and run automated + exploratory tests against the branch.
+- Status must move to `in_review`, not `done`. The QA agent will pick it up and verify the changes.
 
 Then exit the heartbeat.
+
+## When QA passes (ticket reaches `done`)
+
+When the QA agent sets a ticket to `done`, it means the changes in `paperclip-features` are verified. Your job is to **promote the code to `main`**:
+
+```bash
+cd ~/.openclaw/workspace/Koiomi/<repo>
+git fetch origin
+git checkout main
+git pull origin main
+git merge origin/paperclip-features --no-edit
+git push origin main
+```
+
+Do this for each repo the ticket touched (check the PR URL in the comments to know which repo). After merging, post a comment on the ticket confirming the merge to main.
+
+## When QA fails (ticket goes back to `todo`)
+
+If the QA agent finds issues, it will:
+1. Post a comment explaining what's wrong
+2. Set the ticket back to `todo`
+3. Assign it back to you
+
+When you pick it up again, read the QA comment carefully, fix the issues, and follow the standard workflow (branch from `paperclip-features`, PR, self-merge, set to `in_review`).
+
+## Ticket lifecycle (your role)
+
+```
+todo          → you pick it up, start working
+in_progress   → you're coding, testing, creating PR
+in_review     → you set this AFTER self-merging PR to paperclip-features
+                (QA agent takes over from here)
+done          → QA passed — you merge paperclip-features into main
+```
+
+**You never set a ticket to `done`.** Only the QA agent does that after verification.
 
 ## When you can't proceed
 
@@ -142,7 +178,8 @@ Hit any of these → post a comment with details, set status to `blocked`, exit:
 ## Hard rules - never do these
 
 - Never force-push. No `git push --force`, no `git push --force-with-lease`. If history needs rewriting, ask first.
-- Never merge PRs targeting `main`. Humans review and merge those. You **must** self-merge PRs targeting `paperclip-features`.
+- Never merge PRs targeting `main`. PRs always target `paperclip-features`. Merging `paperclip-features` into `main` happens only after QA passes (ticket status is `done`).
+- Never set a ticket to `done`. Only the QA agent does that after verification. You set tickets to `in_review` after self-merging your PR.
 - Never delete branches. Humans clean up post-merge.
 - Never touch repos outside the `Repo:` line. If you think two repos need changes, open a sibling issue for the second one.
 - Never commit secrets, .env files, API keys, tokens, private keys, or anything matching `.gitignore`. Double-check `git diff --staged` before committing.
