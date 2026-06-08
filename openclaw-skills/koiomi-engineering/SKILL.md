@@ -121,10 +121,11 @@ gh pr merge <PR-NUMBER> --squash --delete-branch
 
 ## Communicate back to Paperclip
 
-After the PR is merged into `paperclip-features`, post a comment on the Paperclip issue with the PR URL and update status to `in_review`:
+After the PR is merged into `paperclip-features`, post a comment on the Paperclip issue with the PR URL, reassign to the QA agent, and update status to `in_review`:
 
 - Use the Paperclip-skill API patterns (see that skill).
 - The comment must include the full `https://github.com/jemisonproject/<repo>/pull/<n>` URL.
+- **Reassign the ticket to the QA agent** (`assigneeAgentId: "21c5f0bc-c738-4434-82c8-78764111404e"`) — this is critical. The QA agent can only update tickets assigned to it.
 - Status must move to `in_review`, not `done`. The QA agent will pick it up and verify the changes.
 
 Then exit the heartbeat.
@@ -159,11 +160,13 @@ When you pick it up again, read the QA comment carefully, fix the issues, and fo
 todo          → you pick it up, start working
 in_progress   → you're coding, testing, creating PR
 in_review     → you set this AFTER self-merging PR to paperclip-features
+                AND reassigning to QA agent (21c5f0bc-c738-4434-82c8-78764111404e)
                 (QA agent takes over from here)
 done          → QA passed — you merge paperclip-features into main
 ```
 
 **You never set a ticket to `done`.** Only the QA agent does that after verification.
+**You MUST reassign to QA when setting `in_review`.** The QA agent can only update tickets assigned to it.
 
 ## When you can't proceed
 

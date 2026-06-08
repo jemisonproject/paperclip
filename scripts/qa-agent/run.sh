@@ -30,6 +30,7 @@ PAPERCLIP_API_KEY="${PAPERCLIP_API_KEY:?Set PAPERCLIP_API_KEY in scripts/qa-agen
 COMPANY_ID="${COMPANY_ID:-10c76edd-839e-4950-aec3-e39d058a315a}"
 QA_WEB_URL="${QA_WEB_URL:-http://192.168.30.104:7070}"
 QA_AGENT_ID="${QA_AGENT_ID:-470a0017-f841-4838-924e-b1b1e4af318b}"
+ENGINEERING_AGENT_ID="${ENGINEERING_AGENT_ID:-4d671d9d-fffe-4358-830c-7d9bd764f80a}"
 
 # Colors
 red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
@@ -62,18 +63,43 @@ get_qa_tickets() {
   echo "${result:-[]}"
 }
 
-# Post a comment on an issue
+# Post a comment on an issue (uses /api/issues/ endpoint, not /api/companies/)
 post_comment() {
   local issue_id="$1" body="$2"
-  paperclip_api POST "/issues/$issue_id/comments" \
-    -d "$(jq -n --arg b "$body" '{body: $b}')" >/dev/null 2>&1
+  curl -sf \
+    -X POST \
+    -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg b "$body" '{body: $b}')" \
+    "$PAPERCLIP_URL/api/issues/$issue_id/comments" >/dev/null 2>&1
 }
 
-# Update issue status
+# Update issue status and optionally reassign
+# When QA fails/blocks a ticket, reassign back to engineering so the agent picks it up.
+# When QA passes (done) or skips (done), keep assigned to QA (no reassign needed).
 update_status() {
   local issue_id="$1" status="$2"
-  paperclip_api PATCH "/issues/$issue_id" \
-    -d "$(jq -n --arg s "$status" '{status: $s}')" >/dev/null 2>&1
+  local payload
+
+  # If failing back (todo/blocked), reassign to engineering agent
+  if [ "$status" = "todo" ] || [ "$status" = "blocked" ]; then
+    payload=$(jq -n --arg s "$status" --arg a "$ENGINEERING_AGENT_ID" \
+      '{status: $s, assigneeAgentId: $a}')
+  else
+    payload=$(jq -n --arg s "$status" '{status: $s}')
+  fi
+
+  local http_code
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X PATCH \
+    -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    "$PAPERCLIP_URL/api/issues/$issue_id")
+  if [ "$http_code" != "200" ]; then
+    red "   ⚠ Failed to update $issue_id to $status (HTTP $http_code)"
+    red "     Ticket may not be assigned to QA agent. Run cleanup-qa-results.sh"
+  fi
 }
 
 # Run QA check on a single ticket using Claude Code
@@ -86,25 +112,38 @@ run_qa_check() {
   blue "── QA checking: $identifier — $title"
 
   # Build the prompt for Claude Code
-  local prompt="You are a QA engineer testing a web application. You don't know or care about the code — you test what users see and experience.
+  local prompt="You are a QA engineer testing a web application. You test what users see and experience in the browser.
 
 TICKET:
 - Title: $title
 - Description: $description
 
-FIRST, decide if this ticket describes something you can verify by using the app in a browser. Examples of testable: login page works, search returns results, booking flow completes, UI shows correct data. Examples of NOT testable: backend API scaffold, database migration, JWT guard implementation, code refactor with no UI change.
+FIRST, decide if this ticket has ANY user-facing impact you can verify in a browser.
 
-If the ticket is NOT visually testable (backend-only, infrastructure, code-level):
+IMPORTANT — when to SKIP vs TEST:
+- ONLY skip if the ticket is purely infrastructure with zero UI impact: database migrations, CI/CD config, README edits, pure code refactors that change no behavior, JWT/auth guard internals.
+- If the ticket mentions a URL route (like /pro/clientes, /org/sitio, /admin/usuarios), it IS testable — navigate there.
+- If the ticket describes a bug that affects what users see (search broken, forms not submitting, data not displaying), it IS testable — even if the fix is in backend code.
+- If the ticket mentions visual changes (colors, layout, design, formatting), it IS testable.
+- If the ticket has both API and FE components (title says [API+FE]), it IS testable via the frontend.
+- When in doubt, TEST — don't skip.
+
+If the ticket is genuinely NOT testable (no UI impact at all):
 Respond with:
 QA_RESULT: SKIP
-This is a backend/infrastructure change with no user-facing impact to verify visually.
+<one sentence explaining why there is no user-facing change to verify>
 
-If the ticket IS visually testable, do this:
+If the ticket IS testable, do this:
 1. Use the Playwright MCP browser tools to navigate to the relevant pages at $QA_WEB_URL
 2. Use browser_snapshot to see the page content (accessibility tree)
 3. Interact with the app as a real user would — click buttons, fill forms, navigate
-4. Check for: pages loading correctly, forms working, data displaying, no errors
-5. Use browser_console_messages to check for JavaScript errors
+4. If you need to log in, use these test credentials:
+   - Admin: email=superadmin@koiomi.com password=TestPassword123!
+   - CEO: email=ceo@test-organization.com password=TestPassword123!
+   - Regular user: email=user@test.com password=TestPassword123!
+   Login page is at $QA_WEB_URL/users/sign_in
+5. Check for: pages loading correctly, forms working, data displaying, no errors
+6. Use browser_console_messages to check for JavaScript errors
 
 Then respond with EXACTLY one of:
 
@@ -193,16 +232,15 @@ check_tickets() {
 
   green "   Found $count ticket(s) to review"
 
-  local ticket_ids
-  ticket_ids=$(echo "$tickets" | jq -r '.[].id')
+  local identifiers
+  identifiers=$(echo "$tickets" | jq -r '.[].identifier')
 
-  for id in $ticket_ids; do
-    local title description identifier
-    title=$(echo "$tickets" | jq -r ".[] | select(.id == \"$id\") | .title")
-    description=$(echo "$tickets" | jq -r ".[] | select(.id == \"$id\") | .description // \"No description\"")
-    identifier=$(echo "$tickets" | jq -r ".[] | select(.id == \"$id\") | .identifier // \"unknown\"")
+  for identifier in $identifiers; do
+    local title description
+    title=$(echo "$tickets" | jq -r ".[] | select(.identifier == \"$identifier\") | .title")
+    description=$(echo "$tickets" | jq -r ".[] | select(.identifier == \"$identifier\") | .description // \"No description\"")
 
-    run_qa_check "$id" "$title" "$description" "$identifier"
+    run_qa_check "$identifier" "$title" "$description" "$identifier"
   done
 
   green "═══ QA Agent done ═══"
